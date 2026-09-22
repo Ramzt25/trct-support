@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LMCT Remote Support</title>
+<meta name="theme-color" content="#0f5132">
+<!--
+  SESCO / Aether LMCT remote support: the TECHNICIAN side (Taylor 2026-09-22).
+  Design: SIDE_QUESTS/LMCT_RE/REMOTE_SUPPORT_DESIGN 2026.09.22.md
+
+  1. The tech enters their name and the customer's 6-digit code.
+  2. This page joins Supabase Realtime channel "lmct-<code>" and says hello until
+     the customer's phone answers (the customer must tap Allow there).
+  3. It asks the customer's phone for the tool's own page ("/"), so the tech
+     always runs exactly the UI that tool's firmware carries, and shows it in
+     an iframe whose fetch() is swapped for the relay. Every /api call the UI
+     makes goes: here -> relay -> customer's phone -> tool, and back.
+  Nothing is stored here. Demo security: see the design doc.
+-->
+<style>
+:root{--bg:#f4f6f5;--card:#fff;--ink:#14201a;--dim:#5b6a62;--line:#d8e0db;--brand:#0f5132;--brand2:#157347;--bad:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1411;--card:#16201b;--ink:#e6efe9;--dim:#9db0a5;--line:#26332c;--brand:#1f8a5b;--brand2:#27a36c;--bad:#f2867d}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+#join{min-height:100%;display:flex;align-items:center;justify-content:center;padding:24px 16px calc(24px + env(safe-area-inset-bottom,0px))}
+.card{width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 18px}
+.mark{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.logo{width:36px;height:36px;border-radius:9px;background:var(--brand);color:#fff;display:grid;place-items:center;font-weight:800}
+h1{font-size:19px;margin:0;line-height:1.2}
+h1 small{display:block;font-size:12.5px;font-weight:500;color:var(--dim)}
+label{display:block;font-size:12.5px;font-weight:600;color:var(--dim);margin:14px 0 5px;letter-spacing:.02em}
+input{width:100%;font:inherit;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink)}
+input:focus-visible,button:focus-visible{outline:2px solid var(--brand2);outline-offset:2px}
+#code{font:700 30px/1.1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.3em;text-align:center}
+button{font:inherit;font-weight:700;border:0;border-radius:10px;padding:13px;cursor:pointer}
+#go{width:100%;margin-top:18px;background:var(--brand);color:#fff}
+#go:disabled{opacity:.55}
+#msg{min-height:22px;margin-top:12px;font-size:13.5px;color:var(--dim);text-align:center}
+#msg.bad{color:var(--bad)}
+.fine{font-size:12px;color:var(--dim);margin-top:14px;text-align:center}
+#live{display:none;height:100%;flex-direction:column}
+#bar{display:flex;align-items:center;gap:10px;padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px;background:var(--brand);color:#fff}
+#bar .t{flex:1;min-width:0}
+#bar b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#bar small{display:block;font-size:12px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#bar button{background:#fff;color:var(--brand);padding:8px 12px;flex:none}
+.dot{width:10px;height:10px;border-radius:50%;background:#4ade80;flex:none}
+.dot.slow{background:#facc15}
+#frame{flex:1;width:100%;border:0;background:#fff}
+@media (prefers-reduced-motion:no-preference){.dot{box-shadow:0 0 0 3px rgba(74,222,128,.35)}}
+</style>
+</head>
+<body>
+<div id="join">
+  <div class="card">
+    <div class="mark"><div class="logo">Æ</div><h1>LMCT Remote Support<small>SESCO technicians</small></h1></div>
+    <label for="name">Your name</label>
+    <input id="name" autocomplete="name" autocapitalize="words" placeholder="e.g. Taylor" maxlength="40">
+    <label for="code">Customer's code</label>
+    <input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="000 000" maxlength="7">
+    <button id="go" type="button">Connect</button>
+    <div id="msg" role="status" aria-live="polite"></div>
+    <div class="fine">The customer must tap <b>Allow</b> on their phone. They can end the session at any time.</div>
+  </div>
+</div>
+<div id="live">
+  <div id="bar"><span class="dot" id="dot"></span><div class="t"><b id="barT">Connected</b><small id="barS"></small></div><button type="button" id="end">End</button></div>
+  <iframe id="frame" title="Customer's LMCT tool"></iframe>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+var RS_URL='https://bremtbubaehnbeobwksj.supabase.co', RS_KEY='sb_publishable_ZmrdBlxzW07yopvXmTw84g_V1bqoOZo';
+var $=function(s){ return document.querySelector(s); };
+var sb=null, ch=null, sid=Math.random().toString(36).slice(2)+Date.now().toString(36), pend={}, seq=0, live=false, name='', toolName='', helloT=null;
+try{ $('#name').value=localStorage.getItem('lmctTechName')||''; }catch(e){}
+$('#code').addEventListener('input',function(){ var d=this.value.replace(/\D/g,'').slice(0,6); this.value=d.length>3?d.slice(0,3)+' '+d.slice(3):d; });
+$('#code').addEventListener('keydown',function(e){ if(e.key==='Enter') connect(); });
+$('#go').onclick=connect;
+$('#end').onclick=function(){ end('You ended the session'); };
+function say(t,bad){ var m=$('#msg'); m.textContent=t; m.className=bad?'bad':''; }
+function send(ev,pl){ pl.sid=sid; if(ch) ch.send({type:'broadcast',event:ev,payload:pl}); }
+
+function connect(){
+  name=$('#name').value.trim(); var code=$('#code').value.replace(/\D/g,'');
+  if(!name){ say('Enter your name - the customer sees it before they allow you in',true); $('#name').focus(); return; }
+  if(code.length!==6){ say('The code is 6 digits',true); $('#code').focus(); return; }
+  if(!window.supabase){ say('Could not load the support library - check this phone\'s internet',true); return; }
+  try{ localStorage.setItem('lmctTechName',name); }catch(e){}
+  $('#go').disabled=true; say('Connecting…');
+  sb=sb||window.supabase.createClient(RS_URL,RS_KEY);
+  ch=sb.channel('lmct-'+code,{config:{broadcast:{self:false,ack:false}}});
+  ch.on('broadcast',{event:'welcome'},function(m){ welcome(m.payload||{}); })
+    .on('broadcast',{event:'res'},function(m){ res(m.payload||{}); })
+    .on('broadcast',{event:'view'},function(m){ var p=m.payload||{}; if(p.sid===sid) showView(p); })
+    .on('broadcast',{event:'bye'},function(m){ var p=m.payload||{}; if(!p.sid||p.sid===sid) end(p.reason||'The customer ended the session'); });
+  ch.subscribe(function(st){
+    if(st==='SUBSCRIBED'){
+      say('Waiting for the customer to tap Allow…');
+      var tries=0; send('hello',{name:name});
+      helloT=setInterval(function(){ if(live) return clearInterval(helloT);
+        if(++tries>45){ clearInterval(helloT); fail('No answer. Check the code, and that the customer\'s tool page is open on Settings.'); return; }
+        send('hello',{name:name}); },2000);
+    } else if(st==='CHANNEL_ERROR'||st==='TIMED_OUT'){ fail('Could not reach the support relay ('+st+')'); }
+  });
+}
+function fail(t){ clearInterval(helloT); if(ch){ try{ ch.unsubscribe(); }catch(e){} ch=null; } $('#go').disabled=false; say(t,true); }
+
+async function welcome(p){
+  if(p.sid!==sid||live) return;
+  if(!p.ok){ fail(p.err||'The customer did not allow the connection'); return; }
+  live=true; clearInterval(helloT); toolName=p.tool||'LMCT tool';
+  say('Allowed - loading the customer\'s tool…');
+  try{
+    var r=await rfetch('/'); var html=await r.text();
+    if(!r.ok||html.length<1000) throw new Error('page');
+    open(html);
+  }catch(e){ end('Could not load the tool page from the customer\'s phone'); }
+}
+/* Put the customer's own tool page in the frame, with fetch() routed over the relay. */
+function open(html){
+  var shim='<script>window.LMCT_REMOTE={tech:'+JSON.stringify(name)+'};'+
+    'window.fetch=function(u,o){ return parent.__rfetch(u,o); };<\/script>';
+  html=html.replace(/<head[^>]*>/i,function(m){ return m+shim; });
+  $('#join').style.display='none'; $('#live').style.display='flex';
+  $('#barT').textContent='Connected to '+toolName;
+  $('#barS').textContent='as '+name+' · the customer can end this at any time';
+  $('#frame').srcdoc=html;
+}
+function showView(p){
+  var v={room:'Room',presets:'Presets',proj:'Project',set:'Settings'}[p.view]||p.view||'';
+  $('#barS').textContent='Customer is on: '+v+(p.sheet?' · '+p.sheet:'');
+}
+/* fetch() for the framed page: '/...' goes to the tool through the customer's
+ * phone; anything absolute goes out normally. Chunks come back as i of n. */
+function rfetch(u,o){
+  u=String(u); if(!/^\//.test(u)) return fetch(u,o);
+  if(!live||!ch) return Promise.reject(new TypeError('not connected'));
+  o=o||{}; var id=sid+'.'+(++seq);
+  var hdr={}; if(o.headers){ if(typeof Headers!=='undefined'&&o.headers instanceof Headers) o.headers.forEach(function(v,k){ hdr[k]=v; }); else hdr=o.headers; }
+  return new Promise(function(resolve,reject){
+    var t=setTimeout(function(){ delete pend[id]; $('#dot').classList.add('slow'); reject(new TypeError('the customer\'s phone did not answer')); },25000);
+    pend[id]={parts:[],got:0,resolve:function(st,body){ clearTimeout(t); $('#dot').classList.remove('slow');
+      resolve(new Response(body,{status:st||200,headers:{'Content-Type':/^\s*[\[{]/.test(body)?'application/json':'text/html'}})); }};
+    send('req',{id:id,path:u,method:(o.method||'GET'),headers:hdr,body:(o.body===undefined?null:o.body)});
+  });
+}
+window.__rfetch=rfetch;
+function res(p){
+  if(p.sid!==sid) return; var q=pend[p.id]; if(!q) return;
+  q.parts[p.i]=p.part||''; q.got++;
+  if(q.got>=p.n){ delete pend[p.id]; q.resolve(p.status===502&&!q.parts.join('')?502:p.status, q.parts.join('')); }
+}
+function end(reason){
+  if(ch){ try{ send('bye',{reason:'The technician ended the session'}); ch.unsubscribe(); }catch(e){} ch=null; }
+  live=false; clearInterval(helloT);
+  Object.keys(pend).forEach(function(k){ delete pend[k]; });
+  $('#frame').srcdoc=''; $('#live').style.display='none'; $('#join').style.display='flex';
+  $('#go').disabled=false; $('#code').value=''; say(reason||'Session ended',true);
+}
+window.addEventListener('pagehide',function(){ if(ch&&live) send('bye',{reason:'The technician closed the support page'}); });
+</script>
+</body>
+</html>
