@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>LMCT Remote Support</title>
+<title>TRCT Remote Support</title>
 <meta name="theme-color" content="#0f5132">
 <!--
-  SESCO / Aether LMCT remote support: the TECHNICIAN side (Taylor 2026-09-22).
+  SESCO / Aether TRCT (Taylor Ramsey Commissioning Tool) remote support: the TECHNICIAN side
+  (Taylor 2026-09-22; renamed from LMCT the same day).
   Design: SIDE_QUESTS/LMCT_RE/REMOTE_SUPPORT_DESIGN 2026.09.22.md
 
   1. The tech enters their name and the customer's 6-digit code.
-  2. This page joins Supabase Realtime channel "lmct-<code>" and says hello until
+  2. This page joins Supabase Realtime channel "trct-<code>" and says hello until
      the customer's phone answers (the customer must tap Allow there).
   3. It asks the customer's phone for the tool's own page ("/"), so the tech
      always runs exactly the UI that tool's firmware carries, and shows it in
@@ -55,7 +56,7 @@ button{font:inherit;font-weight:700;border:0;border-radius:10px;padding:13px;cur
 <body>
 <div id="join">
   <div class="card">
-    <div class="mark"><div class="logo">Æ</div><h1>LMCT Remote Support<small>SESCO technicians</small></h1></div>
+    <div class="mark"><div class="logo">Æ</div><h1>TRCT Remote Support<small>SESCO technicians</small></h1></div>
     <label for="name">Your name</label>
     <input id="name" autocomplete="name" autocapitalize="words" placeholder="e.g. Taylor" maxlength="40">
     <label for="code">Customer's code</label>
@@ -67,14 +68,14 @@ button{font:inherit;font-weight:700;border:0;border-radius:10px;padding:13px;cur
 </div>
 <div id="live">
   <div id="bar"><span class="dot" id="dot"></span><div class="t"><b id="barT">Connected</b><small id="barS"></small></div><button type="button" id="end">End</button></div>
-  <iframe id="frame" title="Customer's LMCT tool"></iframe>
+  <iframe id="frame" title="Customer's TRCT tool"></iframe>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script>
 var RS_URL='https://bremtbubaehnbeobwksj.supabase.co', RS_KEY='sb_publishable_ZmrdBlxzW07yopvXmTw84g_V1bqoOZo';
 var $=function(s){ return document.querySelector(s); };
 var sb=null, ch=null, sid=Math.random().toString(36).slice(2)+Date.now().toString(36), pend={}, seq=0, live=false, name='', toolName='', helloT=null;
-try{ $('#name').value=localStorage.getItem('lmctTechName')||''; }catch(e){}
+try{ $('#name').value=localStorage.getItem('trctTechName')||''; }catch(e){}
 $('#code').addEventListener('input',function(){ var d=this.value.replace(/\D/g,'').slice(0,6); this.value=d.length>3?d.slice(0,3)+' '+d.slice(3):d; });
 $('#code').addEventListener('keydown',function(e){ if(e.key==='Enter') connect(); });
 $('#go').onclick=connect;
@@ -87,10 +88,10 @@ function connect(){
   if(!name){ say('Enter your name - the customer sees it before they allow you in',true); $('#name').focus(); return; }
   if(code.length!==6){ say('The code is 6 digits',true); $('#code').focus(); return; }
   if(!window.supabase){ say('Could not load the support library - check this phone\'s internet',true); return; }
-  try{ localStorage.setItem('lmctTechName',name); }catch(e){}
+  try{ localStorage.setItem('trctTechName',name); }catch(e){}
   $('#go').disabled=true; say('Connecting…');
   sb=sb||window.supabase.createClient(RS_URL,RS_KEY);
-  ch=sb.channel('lmct-'+code,{config:{broadcast:{self:false,ack:false}}});
+  ch=sb.channel('trct-'+code,{config:{broadcast:{self:false,ack:false}}});
   ch.on('broadcast',{event:'welcome'},function(m){ welcome(m.payload||{}); })
     .on('broadcast',{event:'res'},function(m){ res(m.payload||{}); })
     .on('broadcast',{event:'view'},function(m){ var p=m.payload||{}; if(p.sid===sid) showView(p); })
@@ -110,7 +111,7 @@ function fail(t){ clearInterval(helloT); if(ch){ try{ ch.unsubscribe(); }catch(e
 async function welcome(p){
   if(p.sid!==sid||live) return;
   if(!p.ok){ fail(p.err||'The customer did not allow the connection'); return; }
-  live=true; clearInterval(helloT); toolName=p.tool||'LMCT tool';
+  live=true; clearInterval(helloT); toolName=p.tool||'TRCT tool';
   say('Allowed - loading the customer\'s tool…');
   try{
     var r=await rfetch('/'); var html=await r.text();
@@ -120,7 +121,7 @@ async function welcome(p){
 }
 /* Put the customer's own tool page in the frame, with fetch() routed over the relay. */
 function open(html){
-  var shim='<script>window.LMCT_REMOTE={tech:'+JSON.stringify(name)+'};'+
+  var shim='<script>window.TRCT_REMOTE={tech:'+JSON.stringify(name)+'};'+
     'window.fetch=function(u,o){ return parent.__rfetch(u,o); };<\/script>';
   html=html.replace(/<head[^>]*>/i,function(m){ return m+shim; });
   $('#join').style.display='none'; $('#live').style.display='flex';
