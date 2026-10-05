@@ -38,6 +38,7 @@ input:focus-visible,button:focus-visible{outline:2px solid var(--brand2);outline
 button{font:inherit;font-weight:700;border:0;border-radius:10px;padding:13px;cursor:pointer}
 #go{width:100%;margin-top:18px;background:var(--brand);color:#fff}
 #go:disabled{opacity:.55}
+#bar.lost{background:var(--bad)} #dot.lost{background:#fff;animation:none}
 #msg{min-height:22px;margin-top:12px;font-size:13.5px;color:var(--dim);text-align:center}
 #msg.bad{color:var(--bad)}
 .fine{font-size:12px;color:var(--dim);margin-top:14px;text-align:center}
@@ -75,6 +76,24 @@ button{font:inherit;font-weight:700;border:0;border-radius:10px;padding:13px;cur
 var RS_URL='https://bremtbubaehnbeobwksj.supabase.co', RS_KEY='sb_publishable_ZmrdBlxzW07yopvXmTw84g_V1bqoOZo';
 var $=function(s){ return document.querySelector(s); };
 var sb=null, ch=null, sid=Math.random().toString(36).slice(2)+Date.now().toString(36), pend={}, seq=0, live=false, name='', toolName='', helloT=null;
+/* HEARTBEAT (2026-10-05): `hb` both ways once a second; 4 s of silence = lost. A lost link is shown, not ended -
+ * the relay reconnects itself and whatever the tech has staged in the frame stays. 10 minutes lost = ended. */
+var custSeen=0, lost=false, lostAt=0, since=0, hbT=null;
+window.__rsLost=false;
+function fmtT(ms){ var s=Math.floor(ms/1000); return Math.floor(s/60)+':'+((s%60)<10?'0':'')+(s%60); }
+function setLost(v){
+  if(v===lost) return; lost=v; window.__rsLost=v; lostAt=v?Date.now():0;
+  $('#dot').classList.toggle('lost',v); $('#bar').classList.toggle('lost',v);
+}
+function beat(){
+  if(!live) return;
+  var now=Date.now();
+  setLost(custSeen&&(now-custSeen>4000));
+  if(lost&&now-lostAt>600000){ end('Connection lost for 10 minutes'); return; }
+  send('hb',{t:now});
+  if(lost) { $('#barT').textContent='Connection to the customer LOST'; $('#barS').textContent='waiting for their phone to come back · '+Math.floor((now-lostAt)/1000)+' s · session '+fmtT(now-since); }
+  else { $('#barT').textContent='Connected to '+toolName+' · '+fmtT(now-since); if(!$('#barS').getAttribute('data-view')) $('#barS').textContent='as '+name+' · the customer can end this at any time'; }
+}
 try{ $('#name').value=localStorage.getItem('trctTechName')||''; }catch(e){}
 $('#code').addEventListener('input',function(){ var d=this.value.replace(/\D/g,'').slice(0,6); this.value=d.length>3?d.slice(0,3)+' '+d.slice(3):d; });
 $('#code').addEventListener('keydown',function(e){ if(e.key==='Enter') connect(); });
@@ -93,7 +112,8 @@ function connect(){
   sb=sb||window.supabase.createClient(RS_URL,RS_KEY);
   ch=sb.channel('trct-'+code,{config:{broadcast:{self:false,ack:false}}});
   ch.on('broadcast',{event:'welcome'},function(m){ welcome(m.payload||{}); })
-    .on('broadcast',{event:'res'},function(m){ res(m.payload||{}); })
+    .on('broadcast',{event:'hb'},function(m){ var q=m.payload||{}; if(live&&q.sid===sid) custSeen=Date.now(); })
+    .on('broadcast',{event:'res'},function(m){ custSeen=Date.now(); res(m.payload||{}); })
     .on('broadcast',{event:'view'},function(m){ var p=m.payload||{}; if(p.sid===sid) showView(p); })
     .on('broadcast',{event:'bye'},function(m){ var p=m.payload||{}; if(!p.sid||p.sid===sid) end(p.reason||'The customer ended the session'); });
   ch.subscribe(function(st){
@@ -103,7 +123,7 @@ function connect(){
       helloT=setInterval(function(){ if(live) return clearInterval(helloT);
         if(++tries>45){ clearInterval(helloT); fail('No answer. Check the code, and that the customer\'s tool page is open on Settings.'); return; }
         send('hello',{name:name}); },2000);
-    } else if(st==='CHANNEL_ERROR'||st==='TIMED_OUT'){ fail('Could not reach the support relay ('+st+')'); }
+    } else if(st==='CHANNEL_ERROR'||st==='TIMED_OUT'){ if(live) setLost(true); else fail('Could not reach the support relay ('+st+')'); }
   });
 }
 function fail(t){ clearInterval(helloT); if(ch){ try{ ch.unsubscribe(); }catch(e){} ch=null; } $('#go').disabled=false; say(t,true); }
@@ -111,7 +131,7 @@ function fail(t){ clearInterval(helloT); if(ch){ try{ ch.unsubscribe(); }catch(e
 async function welcome(p){
   if(p.sid!==sid||live) return;
   if(!p.ok){ fail(p.err||'The customer did not allow the connection'); return; }
-  live=true; clearInterval(helloT); toolName=p.tool||'TRCT tool';
+  live=true; clearInterval(helloT); toolName=p.tool||'TRCT tool'; custSeen=Date.now(); since=Date.now(); setLost(false); hbT=setInterval(beat,1000);
   say('Allowed - loading the customer\'s tool…');
   try{
     var r=await rfetch('/'); var html=await r.text();
@@ -130,14 +150,16 @@ function open(html){
   $('#frame').srcdoc=html;
 }
 function showView(p){
+  custSeen=Date.now();
   var v={room:'Room',presets:'Presets',proj:'Project',set:'Settings'}[p.view]||p.view||'';
-  $('#barS').textContent='Customer is on: '+v+(p.sheet?' · '+p.sheet:'');
+  $('#barS').setAttribute('data-view','1'); $('#barS').textContent='Customer is on: '+v+(p.sheet?' · '+p.sheet:'');
 }
 /* fetch() for the framed page: '/...' goes to the tool through the customer's
  * phone; anything absolute goes out normally. Chunks come back as i of n. */
 function rfetch(u,o){
   u=String(u); if(!/^\//.test(u)) return fetch(u,o);
   if(!live||!ch) return Promise.reject(new TypeError('not connected'));
+  if(lost) return Promise.reject(new TypeError('connection to the customer is lost'));
   o=o||{}; var id=sid+'.'+(++seq);
   var hdr={}; if(o.headers){ if(typeof Headers!=='undefined'&&o.headers instanceof Headers) o.headers.forEach(function(v,k){ hdr[k]=v; }); else hdr=o.headers; }
   return new Promise(function(resolve,reject){
@@ -155,7 +177,7 @@ function res(p){
 }
 function end(reason){
   if(ch){ try{ send('bye',{reason:'The technician ended the session'}); ch.unsubscribe(); }catch(e){} ch=null; }
-  live=false; clearInterval(helloT);
+  live=false; clearInterval(helloT); clearInterval(hbT); hbT=null; setLost(false); $('#barS').removeAttribute('data-view');
   Object.keys(pend).forEach(function(k){ delete pend[k]; });
   $('#frame').srcdoc=''; $('#live').style.display='none'; $('#join').style.display='flex';
   $('#go').disabled=false; $('#code').value=''; say(reason||'Session ended',true);

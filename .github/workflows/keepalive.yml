@@ -1,0 +1,19 @@
+# Keep the remote-support relay awake. The Supabase free tier pauses a project after a week with no
+# API traffic, and a paused relay shows the customer "channel error" (2026-10-05, mid-call). One
+# request every two days is enough. The key is the project's PUBLISHABLE key, already in index.html.
+name: relay keep-alive
+on:
+  schedule:
+    - cron: "17 6 */2 * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: touch the relay
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" -m 20 \
+            -H "apikey: sb_publishable_ZmrdBlxzW07yopvXmTw84g_V1bqoOZo" \
+            https://bremtbubaehnbeobwksj.supabase.co/rest/v1/)
+          echo "relay answered HTTP $code"
+          test "$code" != "000"
