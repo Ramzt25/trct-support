@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Find my TRCT tool</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--ink:#16202c;--mute:#5d6b7a;--line:#d9dee5;--ok:#15803d;--warn:#b45309;--btn:#1d4ed8}
+@media (prefers-color-scheme:dark){:root{--bg:#0f141a;--card:#18202a;--ink:#e8edf3;--mute:#9aa7b5;--line:#2a3542;--ok:#4ade80;--warn:#fbbf24;--btn:#3b82f6}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:460px;margin:0 auto;padding:28px 16px}
+h1{font-size:20px;margin:0 0 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}
+#state{font-weight:700;font-size:18px;margin:0 0 6px}
+#state.ok{color:var(--ok)} #state.warn{color:var(--warn)}
+#detail{color:var(--mute);margin:0 0 14px;word-break:break-word}
+a.btn,button{display:block;width:100%;text-align:center;padding:13px;border-radius:10px;border:0;background:var(--btn);color:#fff;font:inherit;font-weight:700;text-decoration:none;margin-top:10px}
+a.btn.ghost{background:transparent;color:var(--btn);border:1px solid var(--line)}
+input{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:transparent;color:inherit;font:inherit}
+small{color:var(--mute);display:block;margin-top:14px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>Find my TRCT tool</h1>
+<div class="card">
+  <p id="state">Looking&hellip;</p>
+  <p id="detail"></p>
+  <a id="go" class="btn" hidden>Open the tool</a>
+  <a id="ap" class="btn ghost" href="http://192.168.4.1/">Use the tool's own Wi-Fi instead</a>
+  <div id="ask" hidden>
+    <input id="tid" inputmode="latin" autocapitalize="off" autocomplete="off" placeholder="Tool ID (12 characters)">
+    <button id="save">Find it</button>
+  </div>
+  <small>The tool reports its address when it joins your hotspot. Bookmark this page with the tool's link
+  (Setup &rarr; hotspot on the tool) and it will take you straight there. Needs internet on the hotspot.</small>
+</div>
+</main>
+<script>
+/* FIND-ME (2026-11-12). The tool posts {id, name, address} to tool_report on every hotspot join and every
+ * 5 minutes after; this page reads it back with tool_find and forwards the browser. The address is checked
+ * here as well as in the table: only a private (RFC1918) IPv4 is ever followed. */
+var RS_URL='https://bremtbubaehnbeobwksj.supabase.co', RS_KEY='sb_publishable_ZmrdBlxzW07yopvXmTw84g_V1bqoOZo';
+var FRESH_S=11*60, POLL_MS=3000, GIVE_UP_MS=120000;
+function $(s){return document.querySelector(s);}
+function priv(ip){
+  var m=/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip||''); if(!m) return false;
+  var a=+m[1],b=+m[2]; if(+m[3]>255||+m[4]>255) return false;
+  return a===10||(a===172&&b>=16&&b<=31)||(a===192&&b===168);
+}
+function ago(s){ if(s<90) return Math.round(s)+' seconds ago'; if(s<5400) return Math.round(s/60)+' minutes ago';
+  if(s<172800) return Math.round(s/3600)+' hours ago'; return Math.round(s/86400)+' days ago'; }
+function say(t,cls,d){ var e=$('#state'); e.textContent=t; e.className=cls||''; $('#detail').textContent=d||''; }
+var q=new URLSearchParams(location.search), id=(q.get('t')||'').toLowerCase().replace(/[^0-9a-f]/g,''), t0=Date.now(), timer=null;
+try{ if(id.length===12) localStorage.setItem('trctFind',id); else id=localStorage.getItem('trctFind')||''; }catch(e){}
+function askId(){ say('Which tool?','', 'Open the link from the tool once, or type its ID.'); $('#ask').hidden=false; }
+$('#save').onclick=function(){ var v=$('#tid').value.toLowerCase().replace(/[^0-9a-f]/g,'');
+  if(v.length!==12){ say('That ID is not 12 characters','warn',''); return; } location.search='?t='+v; };
+function look(){
+  fetch(RS_URL+'/rest/v1/rpc/tool_find',{method:'POST',headers:{'Content-Type':'application/json','apikey':RS_KEY},
+    body:JSON.stringify({p_id:id}),cache:'no-store'})
+  .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+  .then(function(rows){
+    var r=rows&&rows[0];
+    if(!r||!priv(r.ip)){ say('This tool has not reported in yet','warn','Power it on with your hotspot running and internet available. Still checking.'); return again(); }
+    var url='http://'+r.ip+'/', age=Number(r.age_s), nm=r.name||'TRCT tool';
+    var go=$('#go'); go.href=url; go.hidden=false; go.textContent='Open '+nm+' ('+r.ip+')';
+    if(age<=FRESH_S){ say('Found '+nm,'ok','At '+r.ip+', reported '+ago(age)+'. Opening…'); location.replace(url); return; }
+    say(nm+' is not on yet','warn','Last seen at '+r.ip+', '+ago(age)+'. Waiting for it to check in. The button opens the last address anyway.');
+    again();
+  })
+  .catch(function(e){ say('Could not look it up','warn','No internet on this phone, or the lookup service is down ('+e.message+'). Still trying.'); again(); });
+}
+function again(){ if(Date.now()-t0>GIVE_UP_MS){ $('#detail').textContent+=' Stopped checking; reload to try again.'; return; } timer=setTimeout(look,POLL_MS); }
+if(id.length===12) look(); else askId();
+</script>
+</body>
+</html>

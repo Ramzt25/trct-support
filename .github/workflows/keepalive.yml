@@ -1,6 +1,10 @@
-# Keep the remote-support relay awake. The Supabase free tier pauses a project after a week with no
-# API traffic, and a paused relay shows the customer "channel error" (2026-10-05, mid-call). One
-# request every two days is enough. The key is the project's PUBLISHABLE key, already in index.html.
+# Keep the remote-support relay and the find-me table awake. The Supabase free tier pauses a project
+# after a week with no activity, and a paused relay shows the customer "channel error" (2026-10-05,
+# mid-call). The key is the project's PUBLISHABLE key, already in index.html and find.html.
+#
+# 2026-11-12: the old probe (GET /rest/v1/ and "anything but 000 passes") failed every run and the
+# project paused anyway. This one runs a real database query (tool_find) and passes only on HTTP 200,
+# so a red run now means the relay is actually down.
 name: relay keep-alive
 on:
   schedule:
@@ -12,8 +16,10 @@ jobs:
     steps:
       - name: touch the relay
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" -m 20 \
+          code=$(curl -s -o /dev/null -w "%{http_code}" -m 30 --retry 2 \
             -H "apikey: sb_publishable_ZmrdBlxzW07yopvXmTw84g_V1bqoOZo" \
-            https://bremtbubaehnbeobwksj.supabase.co/rest/v1/)
+            -H "Content-Type: application/json" \
+            -d '{"p_id":"000000000000"}' \
+            https://bremtbubaehnbeobwksj.supabase.co/rest/v1/rpc/tool_find)
           echo "relay answered HTTP $code"
-          test "$code" != "000"
+          test "$code" = "200"
